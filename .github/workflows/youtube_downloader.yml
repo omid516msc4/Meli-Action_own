@@ -1,180 +1,85 @@
-name: دانلودر یوتیوب
+name: دانلودر هوشمند یوتیوب
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: "YouTube video URL"
+        description: "لینک یوتیوب"
         required: true
         type: string
-
       output_format:
-        description: "Output format"
+        description: "فرمت خروجی"
         required: true
         type: choice
         options:
-          - mp4 (video)
-          - mp3 (audio only)
-        default: "mp4 (video)"
-
-      desired_quality:
-        description: "Quality"
+          - mp4
+          - mp3
+        default: "mp4"
+      chat_id:
+        description: "شناسه چت بله"
         required: false
         type: string
-        default: "720p"
-
-      max_part_mb:
-        description: "حداکثر حجم هر پارت"
-        required: false
-        type: string
-        default: "90"
 
   repository_dispatch:
     types:
       - youtube_download
 
-permissions:
-  contents: write
-
 jobs:
-  youtube-download:
+  download:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
     steps:
-
       - name: 📂 Checkout
         uses: actions/checkout@v4
 
-      - name: 🔧 Install Dependencies
+      - name: 🔧 Install yt-dlp & FFmpeg
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y zip curl python3 python3-pip
-          pip3 install requests
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          sudo apt-get update && sudo apt-get install -y ffmpeg zip
 
-      - name: 🔗 Get Download Link
-        id: retrieve
+      - name: 📥 Download with yt-dlp
+        id: dl_step
         run: |
-          python3 << 'EOF'
-          import os,sys,time,re,requests
+          URL="${{ github.event.client_payload.url || github.event.inputs.video_url }}"
+          FORMAT="${{ github.event.client_payload.output_format || github.event.inputs.output_format }}"
+          CHAT_ID="${{ github.event.client_payload.chat_id || github.event.inputs.chat_id }}"
+          
+          mkdir -p downloads
+          
+          # تنظیمات دانلود بر اساس فرمت
+          if [ "$FORMAT" = "mp3" ]; then
+            yt-dlp -x --audio-format mp3 --audio-quality 192k -o "downloads/%(title).50s.%(ext)s" "$URL"
+          else
+            yt-dlp -f "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "downloads/%(title).50s.%(ext)s" "$URL"
+          fi
+          
+          # استخراج نام فایل و ذخیره chat_id
+          FILENAME=$(ls downloads | head -n 1)
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          echo "chat_id=$CHAT_ID" >> $GITHUB_OUTPUT
 
-          URL=os.environ.get("INPUT_URL")
-          CHAT=os.environ.get("INPUT_CHAT_ID")
-          FMT=os.environ.get("INPUT_FORMAT")
-          QUAL=os.environ.get("INPUT_QUALITY")
+      - name: ✂️ Split & Zip (If larger than 50MB)
+        run: |
+          cd downloads
+          FILE=$(ls)
+          SIZE=$(stat -c%s "$FILE")
+          # بله گاهی روی فایل‌های بالای ۵۰ مگ حساس است، پارت‌ها را ۹۰ مگ می‌گیریم
+          if [ $SIZE -gt 94371840 ]; then
+            zip -s 90m "split_${FILE}.zip" "$FILE"
+            rm "$FILE"
+          fi
+          cd ..
 
-          is_audio=FMT=="mp3"
-
-          if is_audio:
-              QUAL=QUAL if QUAL in ("64kbps","128kbps","192kbps","320kbps") else "192kbps"
-          else:
-              QUAL=QUAL if QUAL in ("720p","1080p") else "720p"
-
-          payload={
-            "url":URL,
-            "os":"linux",
-            "output":{"type":"audio" if is_audio else "video","format":FMT}
-          }
-
-          if is_audio:
-            payload["audio"]={"bitrate":QUAL}
-          else:
-            payload["output"]["quality"]=QUAL
-
-          s=requests.Session()
-          s.headers.update({"User-Agent":"Mozilla/5.0"})
-          s.get("https://media.ytmp3.gg/")
-
-          resp=s.post("https://hub.ytconvert.org/api/download",json=payload,timeout=30)
-          data=resp.json()
-
-          status_url=data.get("statusUrl")
-          title=data.get("title","video")
-
-          dl=None
-
-          for _ in range(150):
-              time.sleep(2)
-              r=s.get(status_url)
-              js=r.json()
-
-              if js.get("status")=="completed":
-                  dl=js.get("downloadUrl")
-                  break
-
-              if js.get("status")=="failed":
-                  sys.exit(1)
-
-          if not dl:
-              sys.exit(1)
-
-          vid=re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})",URL)[1]
-
-          clean=re.sub(r"[^a-zA-Z0-9]","_",title)[:60]
-
-          fname=f"{clean}_{vid}_{QUAL}.{FMT}"
-
-          with open(".download_info","w") as f:
-              f.write(f"{dl}\n{fname}\n{title}\n{CHAT}")
-
-          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
-              f.write(f"filename={fname}\n")
-              f.write(f"title={title}\n")
-              f.write(f"chat_id={CHAT}\n")
-
-          EOF
+      - name: 📤 Send to Bale
         env:
-          INPUT_URL: ${{ github.event.client_payload.url || github.event.inputs.video_url }}
-          INPUT_CHAT_ID: ${{ github.event.client_payload.chat_id }}
-          INPUT_FORMAT: ${{ github.event.client_payload.output_format || (github.event.inputs.output_format == 'mp3 (audio only)' && 'mp3' || 'mp4') }}
-          INPUT_QUALITY: ${{ github.event.client_payload.desired_quality || github.event.inputs.desired_quality }}
-
-      - name: 📥 Download File
+          BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
         run: |
-          DL=$(head -1 .download_info)
-          NAME=$(sed -n '2p' .download_info)
-
-          mkdir -p release_files
-
-          curl -L -o "release_files/$NAME" "$DL"
-
-          if [ ! -s "release_files/$NAME" ]; then
-            echo "Download failed"
-            exit 1
-          fi
-
-      - name: ✂️ Split Large File
-        run: |
-          NAME="${{ steps.retrieve.outputs.filename }}"
-          SIZE=$(stat -c%s "release_files/$NAME")
-          LIMIT=$((90*1024*1024))
-
-          if [ "$SIZE" -gt "$LIMIT" ]; then
-
-            cd release_files
-            zip -r -s 90m "${NAME}.zip" "$NAME"
-            rm "$NAME"
-            cd ..
-
-          fi
-
-      - name: 📤 Send To Bale
-        if: success() && steps.retrieve.outputs.chat_id != ''
-        run: |
-
-          CHAT="${{ steps.retrieve.outputs.chat_id }}"
-
-          for FILE in release_files/*; do
-
-            echo "Sending $FILE"
-
-            curl -X POST \
-            "https://tapi.bale.ai/bot${{ secrets.BALE_TOKEN }}/sendDocument" \
-            -F chat_id="$CHAT" \
-            -F document=@"$FILE"
-
+          CHAT_ID="${{ steps.dl_step.outputs.chat_id }}"
+          if [ -z "$CHAT_ID" ]; then echo "No Chat ID provided, skipping send."; exit 0; fi
+          
+          for f in downloads/*; do
+            echo "Uploading $f..."
+            curl -X POST "https://tapi.bale.ai/bot${BALE_TOKEN}/sendDocument" \
+              -F "chat_id=${CHAT_ID}" \
+              -F "document=@$f"
           done
-
-      - name: 🧹 Cleanup
-        if: always()
-        run: rm -rf release_files .download_info
