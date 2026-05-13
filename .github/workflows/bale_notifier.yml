@@ -1,0 +1,29 @@
+name: Bale Downloader
+
+on:
+  repository_dispatch:
+    types: [download]
+
+jobs:
+  download-and-send:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Create downloads folder
+        run: mkdir -p downloads
+
+      - name: Download file
+        run: |
+          URL="${{ github.event.client_payload.url }}"
+          wget -O downloads/file "$URL"
+
+      - name: Send file to Bale
+        run: |
+          FILE="downloads/file"
+
+          curl -X POST "https://tapi.bale.ai/bot${{ secrets.BALE_TOKEN }}/sendDocument" \
+          -F chat_id="${{ github.event.client_payload.chat_id }}" \
+          -F document=@"$FILE"
