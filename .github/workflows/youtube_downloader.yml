@@ -1,4 +1,4 @@
-name: دانلودر هوشمند یوتیوب
+name: دانلودر هوشمند یوتیوب (نسخه اصلاح شده)
 
 on:
   workflow_dispatch:
@@ -16,16 +16,13 @@ on:
           - mp3
         default: "mp4"
       chat_id:
-        description: "🆔 شناسه چت بله (از bot.php می‌آید)"
+        description: "🆔 شناسه چت بله"
         required: false
         type: string
 
   repository_dispatch:
     types:
       - youtube_download
-
-permissions:
-  contents: write
 
 jobs:
   download:
@@ -34,15 +31,15 @@ jobs:
       - name: 📂 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🔧 Install yt-dlp, FFmpeg & NodeJS
+      - name: 🔧 Install yt-dlp & Dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg zip nodejs
-          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          # نصب مستقیم آخرین نسخه پایدار
+          sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
-          yt-dlp --version
 
-      - name: 📥 Download video/audio with yt-dlp
+      - name: 📥 Download video/audio
         id: dl_step
         run: |
           URL="${{ github.event.client_payload.url || github.event.inputs.video_url }}"
@@ -52,48 +49,43 @@ jobs:
           mkdir -p downloads
           cd downloads
 
-          echo "🔗 URL: $URL"
-          echo "🎛 FORMAT: $FORMAT"
-
-          # User-Agent و Runtime برای دور زدن تشخیص بات یوتیوب
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          # تعریف پارامترهای عبور از سد یوتیوب
+          # استفاده از کلاینت‌های مختلف برای جلوگیری از خطای Sign-in
+          EXTRACTOR_ARGS="youtube:player_client=ios,web,android"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
           if [ "$FORMAT" = "mp3" ]; then
             yt-dlp \
-              --no-warnings \
+              --extractor-args "$EXTRACTOR_ARGS" \
               --user-agent "$UA" \
-              --js-engine node \
               -x --audio-format mp3 --audio-quality 192k \
               -o "%(title).70s.%(ext)s" \
               "$URL"
           else
             yt-dlp \
-              --no-warnings \
+              --extractor-args "$EXTRACTOR_ARGS" \
               --user-agent "$UA" \
-              --js-engine node \
               -f "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
               -o "%(title).70s.%(ext)s" \
               "$URL"
           fi
 
           FILE=$(ls | head -n 1)
-          echo "✅ File downloaded: $FILE"
           echo "filename=$FILE" >> $GITHUB_OUTPUT
           echo "chat_id=$CHAT_ID" >> $GITHUB_OUTPUT
           cd ..
 
-      - name: ✂️ Split & Zip large files (if >90MB)
+      - name: ✂️ Split & Zip large files
         run: |
           cd downloads
           FILE=$(ls | head -n 1)
-          SIZE=$(stat -c%s "$FILE")
-          LIMIT=$((90*1024*1024))
-          if [ "$SIZE" -gt "$LIMIT" ]; then
-            echo "⚙️ File too big ($SIZE bytes), splitting..."
-            zip -r -s 90m "split_${FILE}.zip" "$FILE"
-            rm "$FILE"
-          else
-            echo "✅ File under limit, no split needed."
+          if [ -f "$FILE" ]; then
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((48*1024*1024)) # بله گاهی روی ۵۰ مگابایت حساس است، ۴۸ گذاشتم که مطمئن باشد
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              zip -r -s 45m "part_${FILE}.zip" "$FILE"
+              rm "$FILE"
+            fi
           fi
           cd ..
 
@@ -103,22 +95,11 @@ jobs:
           BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
         run: |
           CHAT_ID="${{ steps.dl_step.outputs.chat_id }}"
-          echo "📨 Sending to chat $CHAT_ID"
-
-          if [ -z "$CHAT_ID" ]; then
-            echo "No Chat ID provided. Skip sending."
-            exit 0
-          fi
+          if [ -z "$CHAT_ID" ]; then exit 0; fi
 
           for FILE in downloads/*; do
-            echo "Uploading $FILE ..."
             curl -X POST "https://tapi.bale.ai/bot${BALE_TOKEN}/sendDocument" \
               -F "chat_id=${CHAT_ID}" \
               -F "document=@${FILE}" \
-              -F "caption=✅ دانلود از یوتیوب با کیفیت بالا"
+              -F "caption=🎬 فایل شما آماده شد."
           done
-
-      - name: 🧹 Cleanup workspace
-        if: always()
-        run: |
-          rm -rf downloads || true
