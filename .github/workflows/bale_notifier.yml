@@ -1,4 +1,4 @@
-name: Bale Downloader
+name: Bale Downloader Pro
 
 on:
   repository_dispatch:
@@ -12,18 +12,42 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Create downloads folder
-        run: mkdir -p downloads
+      - name: Install dependencies
+        run: |
+          sudo python3 -m pip install --upgrade yt-dlp
+          mkdir -p downloads
 
-      - name: Download file
+      - name: Process Download
+        id: downloader
         run: |
           URL="${{ github.event.client_payload.url }}"
-          wget -O downloads/file "$URL"
+          echo "Processing: $URL"
+          
+          if [[ "$URL" == *"youtube.com"* ]] || [[ "$URL" == *"youtu.be"* ]]; then
+            echo "Type: YouTube"
+            yt-dlp -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4' --max-filesize 45M -o "downloads/file.mp4" "$URL"
+          else
+            echo "Type: Direct Link"
+            wget -O downloads/file "$URL"
+          fi
 
-      - name: Send file to Bale
+      - name: Send to Bale
         run: |
-          FILE="downloads/file"
-
-          curl -X POST "https://tapi.bale.ai/bot${{ secrets.BALE_TOKEN }}/sendDocument" \
-          -F chat_id="${{ github.event.client_payload.chat_id }}" \
-          -F document=@"$FILE"
+          # پیدا کردن فایل دانلود شده (چون اسمش ممکنه فرق کنه)
+          FILENAME=$(ls downloads/ | head -n 1)
+          FILEPATH="downloads/$FILENAME"
+          
+          echo "Sending $FILEPATH to Bale..."
+          
+          RESPONSE=$(curl -s -X POST "https://tapi.bale.ai/bot${{ secrets.BALE_TOKEN }}/sendDocument" \
+            -F chat_id="${{ github.event.client_payload.chat_id }}" \
+            -F document=@"$FILEPATH")
+            
+          echo "Bale Response: $RESPONSE"
+          
+          if [[ "$RESPONSE" == *"\"ok\":true"* ]]; then
+            echo "Success!"
+          else
+            echo "Failed to send to Bale."
+            exit 1
+          fi
