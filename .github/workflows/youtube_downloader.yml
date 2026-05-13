@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: "لینک یوتیوب"
+        description: "📺 لینک ویدیو یوتیوب"
         required: true
         type: string
       output_format:
-        description: "فرمت خروجی"
+        description: "🎧 فرمت خروجی"
         required: true
         type: choice
         options:
@@ -16,7 +16,7 @@ on:
           - mp3
         default: "mp4"
       chat_id:
-        description: "شناسه چت بله"
+        description: "🆔 شناسه چت بله (از bot.php می‌آید)"
         required: false
         type: string
 
@@ -24,62 +24,101 @@ on:
     types:
       - youtube_download
 
+permissions:
+  contents: write
+
 jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: 📂 Checkout
+      - name: 📂 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🔧 Install yt-dlp & FFmpeg
+      - name: 🔧 Install yt-dlp, FFmpeg & NodeJS
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg zip nodejs
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
-          sudo apt-get update && sudo apt-get install -y ffmpeg zip
+          yt-dlp --version
 
-      - name: 📥 Download with yt-dlp
+      - name: 📥 Download video/audio with yt-dlp
         id: dl_step
         run: |
           URL="${{ github.event.client_payload.url || github.event.inputs.video_url }}"
           FORMAT="${{ github.event.client_payload.output_format || github.event.inputs.output_format }}"
           CHAT_ID="${{ github.event.client_payload.chat_id || github.event.inputs.chat_id }}"
-          
-          mkdir -p downloads
-          
-          # تنظیمات دانلود بر اساس فرمت
-          if [ "$FORMAT" = "mp3" ]; then
-            yt-dlp -x --audio-format mp3 --audio-quality 192k -o "downloads/%(title).50s.%(ext)s" "$URL"
-          else
-            yt-dlp -f "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "downloads/%(title).50s.%(ext)s" "$URL"
-          fi
-          
-          # استخراج نام فایل و ذخیره chat_id
-          FILENAME=$(ls downloads | head -n 1)
-          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
-          echo "chat_id=$CHAT_ID" >> $GITHUB_OUTPUT
 
-      - name: ✂️ Split & Zip (If larger than 50MB)
+          mkdir -p downloads
+          cd downloads
+
+          echo "🔗 URL: $URL"
+          echo "🎛 FORMAT: $FORMAT"
+
+          # User-Agent و Runtime برای دور زدن تشخیص بات یوتیوب
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          if [ "$FORMAT" = "mp3" ]; then
+            yt-dlp \
+              --no-warnings \
+              --user-agent "$UA" \
+              --js-engine node \
+              -x --audio-format mp3 --audio-quality 192k \
+              -o "%(title).70s.%(ext)s" \
+              "$URL"
+          else
+            yt-dlp \
+              --no-warnings \
+              --user-agent "$UA" \
+              --js-engine node \
+              -f "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+              -o "%(title).70s.%(ext)s" \
+              "$URL"
+          fi
+
+          FILE=$(ls | head -n 1)
+          echo "✅ File downloaded: $FILE"
+          echo "filename=$FILE" >> $GITHUB_OUTPUT
+          echo "chat_id=$CHAT_ID" >> $GITHUB_OUTPUT
+          cd ..
+
+      - name: ✂️ Split & Zip large files (if >90MB)
         run: |
           cd downloads
-          FILE=$(ls)
+          FILE=$(ls | head -n 1)
           SIZE=$(stat -c%s "$FILE")
-          # بله گاهی روی فایل‌های بالای ۵۰ مگ حساس است، پارت‌ها را ۹۰ مگ می‌گیریم
-          if [ $SIZE -gt 94371840 ]; then
-            zip -s 90m "split_${FILE}.zip" "$FILE"
+          LIMIT=$((90*1024*1024))
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "⚙️ File too big ($SIZE bytes), splitting..."
+            zip -r -s 90m "split_${FILE}.zip" "$FILE"
             rm "$FILE"
+          else
+            echo "✅ File under limit, no split needed."
           fi
           cd ..
 
       - name: 📤 Send to Bale
+        if: success()
         env:
           BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
         run: |
           CHAT_ID="${{ steps.dl_step.outputs.chat_id }}"
-          if [ -z "$CHAT_ID" ]; then echo "No Chat ID provided, skipping send."; exit 0; fi
-          
-          for f in downloads/*; do
-            echo "Uploading $f..."
+          echo "📨 Sending to chat $CHAT_ID"
+
+          if [ -z "$CHAT_ID" ]; then
+            echo "No Chat ID provided. Skip sending."
+            exit 0
+          fi
+
+          for FILE in downloads/*; do
+            echo "Uploading $FILE ..."
             curl -X POST "https://tapi.bale.ai/bot${BALE_TOKEN}/sendDocument" \
               -F "chat_id=${CHAT_ID}" \
-              -F "document=@$f"
+              -F "document=@${FILE}" \
+              -F "caption=✅ دانلود از یوتیوب با کیفیت بالا"
           done
+
+      - name: 🧹 Cleanup workspace
+        if: always()
+        run: |
+          rm -rf downloads || true
