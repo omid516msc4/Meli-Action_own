@@ -9,7 +9,7 @@ on:
         type: string
 
       output_format:
-        description: 'نوع خروجی'
+        description: 'Output format'
         required: true
         type: choice
         options:
@@ -18,10 +18,13 @@ on:
         default: 'mp4 (video)'
 
       desired_quality:
-        description: 'کیفیت (ویدیو: 720p, 1080p | صدا: 192kbps, 320kbps)'
+        description: 'Quality (video: 720p, 1080p | audio: 192kbps, 320kbps)'
         required: false
         type: string
         default: '720p'
+
+  repository_dispatch:
+    types: [youtube_download]
 
       max_part_mb:
         description: 'حداکثر حجم هر قسمت (MB) - 0 = خودکار ۱۸۰۰ مگابایت'
